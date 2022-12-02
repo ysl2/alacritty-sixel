@@ -1,5 +1,7 @@
 //! Exports the `Term` type which is a high-level API for the Grid.
 
+use std::collections::HashSet;
+use std::fmt::Write;
 use std::ops::{Index, IndexMut, Range};
 use std::sync::Arc;
 use std::{cmp, mem, ptr, slice, str};
@@ -7,12 +9,16 @@ use std::{cmp, mem, ptr, slice, str};
 use bitflags::bitflags;
 use log::{debug, trace};
 use unicode_width::UnicodeWidthChar;
+use vte::Params;
 
 use crate::ansi::{
     self, Attr, CharsetIndex, Color, CursorShape, CursorStyle, Handler, NamedColor, StandardCharset,
 };
 use crate::config::Config;
 use crate::event::{Event, EventListener};
+use crate::graphics::{
+    sixel, GraphicCell, GraphicData, Graphics, TextureRef, UpdateQueues, MAX_GRAPHIC_DIMENSIONS,
+};
 use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
 use crate::selection::{Selection, SelectionRange, SelectionType};
@@ -38,6 +44,9 @@ const TITLE_STACK_MAX_DEPTH: usize = 4096;
 /// Default tab interval, corresponding to terminfo `it` value.
 const INITIAL_TABSTOPS: usize = 8;
 
+/// Max. number of graphics stored in a single cell.
+const MAX_GRAPHICS_PER_CELL: usize = 20;
+
 bitflags! {
     pub struct TermMode: u32 {
         const NONE                = 0;
@@ -60,6 +69,9 @@ bitflags! {
         const ALTERNATE_SCROLL    = 0b0000_1000_0000_0000_0000;
         const VI                  = 0b0001_0000_0000_0000_0000;
         const URGENCY_HINTS       = 0b0010_0000_0000_0000_0000;
+        const SIXEL_DISPLAY       = 0b0100_0000_0000_0000_0000;
+        const SIXEL_PRIV_PALETTE  = 0b1000_0000_0000_0000_0000;
+        const SIXEL_CURSOR_TO_THE_RIGHT  = 0b0001_0000_0000_0000_0000_0000;
         const ANY                 = u32::MAX;
     }
 }
@@ -70,6 +82,7 @@ impl Default for TermMode {
             | TermMode::LINE_WRAP
             | TermMode::ALTERNATE_SCROLL
             | TermMode::URGENCY_HINTS
+            | TermMode::SIXEL_PRIV_PALETTE
     }
 }
 
@@ -300,6 +313,9 @@ pub struct Term<T> {
     /// term is set.
     title_stack: Vec<Option<String>>,
 
+    /// Data to add graphics to a grid.
+    graphics: Graphics,
+
     /// Information about damaged cells.
     damage: TermDamageState,
 }
@@ -360,6 +376,7 @@ impl<T> Term<T> {
             title: None,
             title_stack: Vec::new(),
             selection: None,
+            graphics: Graphics::new(dimensions),
             damage,
         }
     }
@@ -589,6 +606,12 @@ impl<T> Term<T> {
         &mut self.grid
     }
 
+    /// Get queues to update graphic data. If both queues are empty, it returns
+    /// `None`.
+    pub fn graphics_take_queues(&mut self) -> Option<UpdateQueues> {
+        self.graphics.take_queues()
+    }
+
     /// Resize terminal to new dimensions.
     pub fn resize<S: Dimensions>(&mut self, size: S) {
         let old_cols = self.columns();
@@ -639,6 +662,9 @@ impl<T> Term<T> {
 
         // Resize damage information.
         self.damage.resize(num_cols, num_lines);
+
+        // Update size information for graphics.
+        self.graphics.resize(&size);
     }
 
     /// Active terminal modes.
@@ -1785,6 +1811,13 @@ impl<T: EventListener> Handler for Term<T> {
                 style.blinking = true;
                 self.event_proxy.send_event(Event::CursorBlinkingChange);
             },
+            ansi::Mode::SixelDisplay => self.mode.insert(TermMode::SIXEL_DISPLAY),
+            ansi::Mode::SixelPrivateColorRegisters => {
+                self.mode.insert(TermMode::SIXEL_PRIV_PALETTE)
+            },
+            ansi::Mode::SixelCursorToTheRight => {
+                self.mode.insert(TermMode::SIXEL_CURSOR_TO_THE_RIGHT);
+            },
         }
     }
 
@@ -1829,6 +1862,14 @@ impl<T: EventListener> Handler for Term<T> {
                 let style = self.cursor_style.get_or_insert(self.default_cursor_style);
                 style.blinking = false;
                 self.event_proxy.send_event(Event::CursorBlinkingChange);
+            },
+            ansi::Mode::SixelDisplay => self.mode.remove(TermMode::SIXEL_DISPLAY),
+            ansi::Mode::SixelPrivateColorRegisters => {
+                self.graphics.sixel_shared_palette = None;
+                self.mode.remove(TermMode::SIXEL_PRIV_PALETTE);
+            },
+            ansi::Mode::SixelCursorToTheRight => {
+                self.mode.remove(TermMode::SIXEL_CURSOR_TO_THE_RIGHT)
             },
         }
     }
@@ -1951,6 +1992,266 @@ impl<T: EventListener> Handler for Term<T> {
     fn text_area_size_chars(&mut self) {
         let text = format!("\x1b[8;{};{}t", self.screen_lines(), self.columns());
         self.event_proxy.send_event(Event::PtyWrite(text));
+    }
+
+    #[inline]
+    fn graphics_attribute(&mut self, pi: u16, pa: u16) {
+        // From Xterm documentation:
+        //
+        //   CSI ? Pi ; Pa ; Pv S
+        //
+        //   Pi = 1  -> item is number of color registers.
+        //   Pi = 2  -> item is Sixel graphics geometry (in pixels).
+        //   Pi = 3  -> item is ReGIS graphics geometry (in pixels).
+        //
+        //   Pa = 1  -> read attribute.
+        //   Pa = 2  -> reset to default.
+        //   Pa = 3  -> set to value in Pv.
+        //   Pa = 4  -> read the maximum allowed value.
+        //
+        //   Pv is ignored by xterm except when setting (Pa == 3).
+        //   Pv = n <- A single integer is used for color registers.
+        //   Pv = width ; height <- Two integers for graphics geometry.
+        //
+        //   xterm replies with a control sequence of the same form:
+        //
+        //   CSI ? Pi ; Ps ; Pv S
+        //
+        //   where Ps is the status:
+        //   Ps = 0  <- success.
+        //   Ps = 1  <- error in Pi.
+        //   Ps = 2  <- error in Pa.
+        //   Ps = 3  <- failure.
+        //
+        //   On success, Pv represents the value read or set.
+
+        fn generate_response(pi: u16, ps: u16, pv: &[usize]) -> String {
+            let mut text = format!("\x1b[?{};{}", pi, ps);
+            for item in pv {
+                let _ = write!(&mut text, ";{}", item);
+            }
+            text.push('S');
+            text
+        }
+
+        let (ps, pv) = match pi {
+            1 => {
+                match pa {
+                    1 => (0, &[sixel::MAX_COLOR_REGISTERS][..]), // current value is always the
+                    // maximum
+                    2 => (3, &[][..]), // Report unsupported
+                    3 => (3, &[][..]), // Report unsupported
+                    4 => (0, &[sixel::MAX_COLOR_REGISTERS][..]),
+                    _ => (2, &[][..]), // Report error in Pa
+                }
+            },
+
+            2 => {
+                match pa {
+                    1 => {
+                        self.event_proxy.send_event(Event::TextAreaSizeRequest(Arc::new(
+                            move |window_size| {
+                                let width = window_size.num_cols * window_size.cell_width;
+                                let height = window_size.num_lines * window_size.cell_height;
+                                let graphic_dimensions = [
+                                    cmp::min(width as usize, MAX_GRAPHIC_DIMENSIONS[0]),
+                                    cmp::min(height as usize, MAX_GRAPHIC_DIMENSIONS[1]),
+                                ];
+
+                                let (ps, pv) = (0, &graphic_dimensions[..]);
+                                generate_response(pi, ps, pv)
+                            },
+                        )));
+                        return;
+                    },
+                    2 => (3, &[][..]), // Report unsupported
+                    3 => (3, &[][..]), // Report unsupported
+                    4 => (0, &MAX_GRAPHIC_DIMENSIONS[..]),
+                    _ => (2, &[][..]), // Report error in Pa
+                }
+            },
+
+            3 => {
+                (1, &[][..]) // Report error in Pi (ReGIS unknown)
+            },
+
+            _ => {
+                (1, &[][..]) // Report error in Pi
+            },
+        };
+
+        self.event_proxy.send_event(Event::PtyWrite(generate_response(pi, ps, pv)));
+    }
+
+    fn start_sixel_graphic(&mut self, params: &Params) -> Option<Box<sixel::Parser>> {
+        let palette = self.graphics.sixel_shared_palette.take();
+        Some(Box::new(sixel::Parser::new(params, palette)))
+    }
+
+    fn insert_graphic(&mut self, graphic: GraphicData, palette: Option<Vec<Rgb>>) {
+        let cell_width = self.graphics.cell_width as usize;
+        let cell_height = self.graphics.cell_height as usize;
+
+        // Store last palette if we receive a new one, and it is shared.
+        if let Some(palette) = palette {
+            if !self.mode.contains(TermMode::SIXEL_PRIV_PALETTE) {
+                self.graphics.sixel_shared_palette = Some(palette);
+            }
+        }
+
+        if graphic.width > MAX_GRAPHIC_DIMENSIONS[0] || graphic.height > MAX_GRAPHIC_DIMENSIONS[1] {
+            return;
+        }
+
+        let width = graphic.width as u16;
+        let height = graphic.height as u16;
+
+        if width == 0 || height == 0 {
+            return;
+        }
+
+        let graphic_id = self.graphics.next_id();
+
+        // If SIXEL_DISPLAY is disabled, the start of the graphic is the
+        // cursor position, and the grid can be scrolled if the graphic is
+        // larger than the screen. The cursor is moved to the next line
+        // after the graphic.
+        //
+        // If it is disabled, the graphic starts at (0, 0), the grid is never
+        // scrolled, and the cursor position is unmodified.
+
+        let scrolling = !self.mode.contains(TermMode::SIXEL_DISPLAY);
+
+        let leftmost = if scrolling { self.grid.cursor.point.column.0 } else { 0 };
+
+        // A very simple optimization is to detect is a new graphic is replacing
+        // completely a previous one. This happens if the following conditions
+        // are met:
+        //
+        // - Both graphics are attached to the same top-left cell.
+        // - Both graphics have the same size.
+        // - The new graphic does not contain transparent pixels.
+        //
+        // In this case, we will ignore cells with a reference to the replaced
+        // graphic.
+
+        let skip_textures = {
+            if graphic.maybe_transparent() {
+                HashSet::new()
+            } else {
+                let mut set = HashSet::new();
+
+                let line = if scrolling { self.grid.cursor.point.line } else { Line(0) };
+
+                if let Some(old_graphics) = self.grid[line][Column(leftmost)].graphics() {
+                    for graphic in old_graphics {
+                        let tex = &*graphic.texture;
+                        if tex.width == width
+                            && tex.height == height
+                            && tex.cell_height == cell_height
+                        {
+                            set.insert(tex.id);
+                        }
+                    }
+                }
+
+                set
+            }
+        };
+
+        // Fill the cells under the graphic.
+        //
+        // The cell in the first column contains a reference to the
+        // graphic, with the offset from the start. The rest of the
+        // cells are not overwritten, allowing any text behind
+        // transparent portions of the image to be visible.
+
+        let texture = Arc::new(TextureRef {
+            id: graphic_id,
+            width,
+            height,
+            cell_height,
+            texture_operations: Arc::downgrade(&self.graphics.texture_operations),
+        });
+
+        for (top, offset_y) in (0..).zip((0..height).step_by(cell_height)) {
+            let line = if scrolling {
+                self.grid.cursor.point.line
+            } else {
+                // Check if the image is beyond the screen limit.
+                if top >= self.screen_lines() as i32 {
+                    break;
+                }
+
+                Line(top)
+            };
+
+            // Store a reference to the graphic in the first column.
+            let row_len = self.grid[line].len();
+            for (left, offset_x) in (leftmost..).zip((0..width).step_by(cell_width)) {
+                if left >= row_len {
+                    break;
+                }
+
+                let texture_operations = Arc::downgrade(&self.graphics.texture_operations);
+                let graphic_cell = GraphicCell {
+                    texture: texture.clone(),
+                    offset_x,
+                    offset_y,
+                    texture_operations,
+                };
+
+                let mut cell = self.grid.cursor.template.clone();
+                let cell_ref = &mut self.grid[line][Column(left)];
+
+                // If the cell contains any graphics, and the region of the cell
+                // is not fully filled by the new graphic, the old graphics are
+                // kept in the cell.
+                let graphics = match cell_ref.take_graphics() {
+                    Some(mut old_graphics)
+                        if old_graphics
+                            .iter()
+                            .any(|graphic| !skip_textures.contains(&graphic.texture.id))
+                            && !graphic.is_filled(
+                                offset_x as usize,
+                                offset_y as usize,
+                                cell_width as usize,
+                                cell_height as usize,
+                            ) =>
+                    {
+                        // Ensure that we don't exceed the graphics limit per cell.
+                        while old_graphics.len() >= MAX_GRAPHICS_PER_CELL {
+                            drop(old_graphics.remove(0));
+                        }
+
+                        old_graphics.push(graphic_cell);
+                        old_graphics
+                    },
+
+                    _ => smallvec::smallvec![graphic_cell],
+                };
+
+                cell.set_graphics(graphics);
+                *cell_ref = cell;
+
+                self.damage.damage_point(Point::new(line.0 as usize, Column(left)));
+            }
+
+            if scrolling && offset_y < height.saturating_sub(cell_height as u16) {
+                self.linefeed();
+            }
+        }
+
+        if self.mode.contains(TermMode::SIXEL_CURSOR_TO_THE_RIGHT) {
+            let graphic_columns = (graphic.width + cell_width - 1) / cell_width;
+            self.move_forward(Column(graphic_columns));
+        } else if scrolling {
+            self.linefeed();
+            self.carriage_return();
+        }
+
+        // Add the graphic data to the pending queue.
+        self.graphics.pending.push(GraphicData { id: graphic_id, ..graphic });
     }
 }
 

@@ -91,6 +91,8 @@ pub trait TextRenderer<'a> {
 
         func(self.loader_api())
     }
+
+    fn reset_active_tex(&mut self) {}
 }
 
 pub trait TextRenderBatch {

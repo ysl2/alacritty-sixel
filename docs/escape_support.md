@@ -57,7 +57,7 @@ brevity.
 | `CSI ? h`  | PARTIAL     | Supported modes:                                  |
 |            |             |   `1`, `3`, `6`, `7`, `12`, `25`, `1000`, `1002`  |
 |            |             |   `1004`, `1005`, `1006`, `1007`, `1042`, `1049`  |
-|            |             |   `2004`                                          |
+|            |             |   `2004`, `8452`                                  |
 | `CSI I`    | IMPLEMENTED |                                                   |
 | `CSI J`    | IMPLEMENTED |                                                   |
 | `CSI K`    | IMPLEMENTED |                                                   |
@@ -74,6 +74,7 @@ brevity.
 | `CSI SP q` | IMPLEMENTED |                                                   |
 | `CSI r`    | IMPLEMENTED |                                                   |
 | `CSI S`    | IMPLEMENTED |                                                   |
+| `CSI ? S`  | PARTIAL     | Only for reading attributes.                      |
 | `CSI s`    | IMPLEMENTED |                                                   |
 | `CSI T`    | IMPLEMENTED |                                                   |
 | `CSI t`    | PARTIAL     | Only parameters `22` and `23` are supported       |
@@ -106,3 +107,4 @@ brevity.
 | ESCAPE    | STATUS      | NOTE                                               |
 | --------- | ----------- | -------------------------------------------------- |
 | `DCS = s` | IMPLEMENTED |                                                    |
+| `DCS q`   | IMPLEMENTED |                                                    |

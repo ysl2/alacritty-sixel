@@ -28,6 +28,7 @@ dependencies = [
  "glutin",
  "libc",
  "log",
+ "memoffset",
  "notify-debouncer-mini",
  "objc",
  "once_cell",
@@ -37,6 +38,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "smallvec",
  "unicode-width",
  "wayland-client",
  "windows-sys",
@@ -90,6 +92,7 @@ dependencies = [
  "serde_yaml",
  "signal-hook",
  "signal-hook-mio",
+ "smallvec",
  "unicode-width",
  "vte",
  "windows-sys",
@@ -1605,6 +1608,9 @@ name = "smallvec"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fd0db749597d91ff862fd1d55ea87f7855a744a8425a64695b6fca237d1dad1"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "smithay-client-toolkit"

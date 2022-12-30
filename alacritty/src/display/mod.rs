@@ -856,7 +856,7 @@ impl Display {
             );
         }
 
-        let mut rects = lines.rects(&metrics, &size_info);
+        let mut rects = lines.rects(&metrics, &size_info, config.font.glyph_offset);
 
         self.renderer.graphics_draw(graphics_list, &size_info, &mut rects, &metrics);
 
@@ -1136,7 +1136,12 @@ impl Display {
 
         // Add underline for preedit text.
         let underline = RenderLine { start, end, color: fg };
-        rects.extend(underline.rects(Flags::UNDERLINE, &metrics, &self.size_info));
+        rects.extend(underline.rects(
+            Flags::UNDERLINE,
+            &metrics,
+            &self.size_info,
+            config.font.glyph_offset,
+        ));
 
         let ime_popup_point = match preedit.cursor_end_offset {
             Some(cursor_end_offset) if cursor_end_offset != 0 => {

@@ -1,11 +1,5 @@
-#[rustfmt::skip]
 #[cfg(not(any(target_os = "macos", windows)))]
-use {
-    std::sync::atomic::AtomicBool,
-    std::sync::Arc,
-
-    winit::platform::unix::{WindowBuilderExtUnix, WindowExtUnix},
-};
+use winit::platform::unix::{WindowBuilderExtUnix, WindowExtUnix};
 
 #[rustfmt::skip]
 #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
@@ -28,17 +22,22 @@ use {
 };
 
 use std::fmt::{self, Display, Formatter};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
-use cocoa::base::{id, NO, YES};
-#[cfg(target_os = "macos")]
-use objc::{msg_send, sel, sel_impl};
+use {
+    cocoa::appkit::NSColorSpace,
+    cocoa::base::{id, nil, NO, YES},
+    objc::{msg_send, sel, sel_impl},
+    winit::platform::macos::{WindowBuilderExtMacOS, WindowExtMacOS},
+};
+
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event_loop::EventLoopWindowTarget;
-#[cfg(target_os = "macos")]
-use winit::platform::macos::{WindowBuilderExtMacOS, WindowExtMacOS};
+use winit::monitor::MonitorHandle;
 #[cfg(windows)]
 use winit::platform::windows::IconExtWindows;
 use winit::window::{
@@ -106,9 +105,8 @@ impl From<crossfont::Error> for Error {
 ///
 /// Wraps the underlying windowing library to provide a stable API in Alacritty.
 pub struct Window {
-    /// Flag tracking frame redraw requests from Wayland compositor.
-    #[cfg(not(any(target_os = "macos", windows)))]
-    pub should_draw: Arc<AtomicBool>,
+    /// Flag tracking that we have a frame we can draw.
+    pub has_frame: Arc<AtomicBool>,
 
     /// Attached Wayland surface to request new frame events.
     #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
@@ -168,6 +166,9 @@ impl Window {
         // Enable IME.
         window.set_ime_allowed(true);
 
+        #[cfg(target_os = "macos")]
+        use_srgb_color_space(&window);
+
         #[cfg(all(feature = "x11", not(any(target_os = "macos", windows))))]
         if !is_wayland {
             // On X11, embed the window inside another if the parent ID has been set.
@@ -194,8 +195,7 @@ impl Window {
             mouse_visible: true,
             window,
             title: identity.title,
-            #[cfg(not(any(target_os = "macos", windows)))]
-            should_draw: Arc::new(AtomicBool::new(true)),
+            has_frame: Arc::new(AtomicBool::new(true)),
             #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
             wayland_surface,
             scale_factor,
@@ -388,6 +388,10 @@ impl Window {
         }
     }
 
+    pub fn current_monitor(&self) -> Option<MonitorHandle> {
+        self.window.current_monitor()
+    }
+
     #[cfg(target_os = "macos")]
     pub fn set_simple_fullscreen(&self, simple_fullscreen: bool) {
         self.window.set_simple_fullscreen(simple_fullscreen);
@@ -458,6 +462,18 @@ fn x_embed_window(window: &WinitWindow, parent_id: std::os::raw::c_ulong) {
         // Drain errors and restore original error handler.
         (xlib.XSync)(xlib_display as _, 0);
         (xlib.XSetErrorHandler)(old_handler);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn use_srgb_color_space(window: &WinitWindow) {
+    let raw_window = match window.raw_window_handle() {
+        RawWindowHandle::AppKit(handle) => handle.ns_window as id,
+        _ => return,
+    };
+
+    unsafe {
+        let _: () = msg_send![raw_window, setColorSpace: NSColorSpace::sRGBColorSpace(nil)];
     }
 }
 

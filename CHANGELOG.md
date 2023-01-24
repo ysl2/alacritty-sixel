@@ -10,10 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - Uppercase `-T` short form for `--title`
+- Support for horizontal scrolling in mouse mode and alternative scrolling modes
 
 ### Changed
 
 - `font.glyph_offset.y` is now applied to underline/strikeout
+- Always use sRGB color space on macOS
+- Erase in line after the last column will no longer clear the last column
 
 ### Fixed
 
@@ -31,6 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Crash while typing on Wayland
 - Multi-line semantic bracket selection
 - Reduced GPU memory usage
+- Low frame rate when multiple windows render at the same time
+- Redraw hanging until a keypress on X11 in rare cases
 
 ## 0.11.0
 

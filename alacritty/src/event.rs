@@ -10,6 +10,7 @@ use std::fmt::Debug;
 use std::os::unix::io::RawFd;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use std::{env, f32, mem};
 
@@ -101,6 +102,7 @@ pub enum EventType {
     BlinkCursor,
     BlinkCursorTimeout,
     SearchNext,
+    Frame,
 }
 
 impl From<TerminalEvent> for EventType {
@@ -1031,7 +1033,7 @@ pub struct Mouse {
     pub last_click_timestamp: Instant,
     pub last_click_button: MouseButton,
     pub click_state: ClickState,
-    pub scroll_px: f64,
+    pub accumulated_scroll: AccumulatedScroll,
     pub cell_side: Side,
     pub lines_scrolled: f32,
     pub block_hint_launcher: bool,
@@ -1055,7 +1057,7 @@ impl Default for Mouse {
             block_hint_launcher: Default::default(),
             inside_text_area: Default::default(),
             lines_scrolled: Default::default(),
-            scroll_px: Default::default(),
+            accumulated_scroll: Default::default(),
             x: Default::default(),
             y: Default::default(),
         }
@@ -1079,6 +1081,16 @@ impl Mouse {
     }
 }
 
+/// The amount of scroll accumulated from the pointer events.
+#[derive(Default, Debug)]
+pub struct AccumulatedScroll {
+    /// Scroll we should perform along `x` axis.
+    pub x: f64,
+
+    /// Scroll we should perform along `y` axis.
+    pub y: f64,
+}
+
 impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
     /// Handle events from winit.
     pub fn handle_event(&mut self, event: WinitEvent<'_, Event>) {
@@ -1095,6 +1107,9 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
                     display_update_pending.set_dimensions(PhysicalSize::new(width, height));
 
                     self.ctx.window().scale_factor = scale_factor;
+                },
+                EventType::Frame => {
+                    self.ctx.display.window.has_frame.store(true, Ordering::Relaxed);
                 },
                 EventType::SearchNext => self.ctx.goto_match(None),
                 EventType::Scroll(scroll) => self.ctx.scroll(scroll),
@@ -1176,11 +1191,10 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
                 match event {
                     WindowEvent::CloseRequested => self.ctx.terminal.exit(),
                     WindowEvent::Resized(size) => {
-                        // Minimizing the window sends a Resize event with zero width and
-                        // height. But there's no need to ever actually resize to this.
-                        // ConPTY has issues when resizing down to zero size and back.
-                        #[cfg(windows)]
-                        if size.width == 0 && size.height == 0 {
+                        // Ignore resize events to zero in any dimension, to avoid issues with Winit
+                        // and the ConPTY. A 0x0 resize will also occur when the window is minimized
+                        // on Windows.
+                        if size.width == 0 || size.height == 0 {
                             return;
                         }
 
@@ -1451,11 +1465,6 @@ impl Processor {
                 },
                 // Process all pending events.
                 WinitEvent::RedrawEventsCleared => {
-                    *control_flow = match scheduler.update() {
-                        Some(instant) => ControlFlow::WaitUntil(instant),
-                        None => ControlFlow::Wait,
-                    };
-
                     // Check for pending frame callbacks on Wayland.
                     #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
                     if let Some(wayland_event_queue) = self.wayland_event_queue.as_mut() {
@@ -1474,6 +1483,13 @@ impl Processor {
                             WinitEvent::RedrawEventsCleared,
                         );
                     }
+
+                    // Update the scheduler after event processing to ensure
+                    // the event loop deadline is as accurate as possible.
+                    *control_flow = match scheduler.update() {
+                        Some(instant) => ControlFlow::WaitUntil(instant),
+                        None => ControlFlow::Wait,
+                    };
                 },
                 // Process config update.
                 WinitEvent::UserEvent(Event { payload: EventType::ConfigReload(path), .. }) => {

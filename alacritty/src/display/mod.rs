@@ -479,6 +479,9 @@ impl Display {
             renderer.finish();
         }
 
+        // Set resize increments for the newly created window.
+        window.set_resize_increments(PhysicalSize::new(cell_width, cell_height));
+
         window.set_visible(true);
 
         #[allow(clippy::single_match)]
@@ -651,6 +654,9 @@ impl Display {
         let message_bar_lines = message_buffer.message().map_or(0, |m| m.text(&new_size).len());
         let search_lines = usize::from(search_active);
         new_size.reserve_lines(message_bar_lines + search_lines);
+
+        // Update resize increments.
+        self.window.set_resize_increments(PhysicalSize::new(cell_width, cell_height));
 
         // Resize PTY.
         pty_resize_handle.on_resize(new_size.into());
@@ -858,7 +864,7 @@ impl Display {
             );
         }
 
-        let mut rects = lines.rects(&metrics, &size_info, config.font.glyph_offset);
+        let mut rects = lines.rects(&metrics, &size_info);
 
         self.renderer.graphics_draw(graphics_list, &size_info, &mut rects, &metrics);
 
@@ -1145,12 +1151,7 @@ impl Display {
 
         // Add underline for preedit text.
         let underline = RenderLine { start, end, color: fg };
-        rects.extend(underline.rects(
-            Flags::UNDERLINE,
-            &metrics,
-            &self.size_info,
-            config.font.glyph_offset,
-        ));
+        rects.extend(underline.rects(Flags::UNDERLINE, &metrics, &self.size_info));
 
         let ime_popup_point = match preedit.cursor_end_offset {
             Some(cursor_end_offset) if cursor_end_offset != 0 => {

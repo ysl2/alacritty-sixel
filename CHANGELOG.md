@@ -15,7 +15,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-- `font.glyph_offset.y` is now applied to underline/strikeout
 - Always use sRGB color space on macOS
 - Erase in line after the last column will no longer clear the last column
 - Open new windows by default with macOS `Cmd`+`N` binding
@@ -23,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `window.decorations_theme_variant` could now control theme on macOS and Windows
 - The IME purpose is now set to `Terminal` which could help with OSK
 - `window.decorations_theme_variant` is now using `Dark`, `Light`, and `None` values
+- Resize increments are now set on macOS and X11 to resize by cell sizes
 
 ### Fixed
 
@@ -43,6 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Low frame rate when multiple windows render at the same time
 - Redraw hanging until a keypress on X11 in rare cases
 - Window clipping when maximizing a window without decorations on Windows
+- Quadrants not aligned with half blocks with built-in font
 
 ### Removed
 

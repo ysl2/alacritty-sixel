@@ -480,7 +480,9 @@ impl Display {
         }
 
         // Set resize increments for the newly created window.
-        window.set_resize_increments(PhysicalSize::new(cell_width, cell_height));
+        if config.window.resize_increments {
+            window.set_resize_increments(PhysicalSize::new(cell_width, cell_height));
+        }
 
         window.set_visible(true);
 
@@ -656,7 +658,9 @@ impl Display {
         new_size.reserve_lines(message_bar_lines + search_lines);
 
         // Update resize increments.
-        self.window.set_resize_increments(PhysicalSize::new(cell_width, cell_height));
+        if config.window.resize_increments {
+            self.window.set_resize_increments(PhysicalSize::new(cell_width, cell_height));
+        }
 
         // Resize PTY.
         pty_resize_handle.on_resize(new_size.into());

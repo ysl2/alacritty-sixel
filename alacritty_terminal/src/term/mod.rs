@@ -48,6 +48,7 @@ const INITIAL_TABSTOPS: usize = 8;
 const MAX_GRAPHICS_PER_CELL: usize = 20;
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct TermMode: u32 {
         const NONE                = 0;
         const SHOW_CURSOR         = 0b0000_0000_0000_0000_0001;

@@ -242,7 +242,7 @@ pub struct WindowIdentity {
     pub title: Option<String>,
 
     /// Defines window class/app_id on X11/Wayland [default: Alacritty].
-    #[clap(long, value_name = "general> | <general>,<instance", value_parser = parse_class)]
+    #[clap(short = 'c', value_name = "general> | <general>,<instance", value_parser = parse_class)]
     pub class: Option<Class>,
 }
 

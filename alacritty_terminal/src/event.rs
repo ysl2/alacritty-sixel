@@ -2,8 +2,8 @@ use std::borrow::Cow;
 use std::fmt::{self, Debug, Formatter};
 use std::sync::Arc;
 
-use crate::term::color::Rgb;
 use crate::term::ClipboardType;
+use crate::vte::ansi::Rgb;
 
 /// Terminal event.
 ///
@@ -25,13 +25,13 @@ pub enum Event {
 
     /// Request to write the contents of the clipboard to the PTY.
     ///
-    /// The attached function is a formatter which will corectly transform the clipboard content
+    /// The attached function is a formatter which will correctly transform the clipboard content
     /// into the expected escape sequence format.
     ClipboardLoad(ClipboardType, Arc<dyn Fn(&str) -> String + Sync + Send + 'static>),
 
     /// Request to write the RGB value of a color to the PTY.
     ///
-    /// The attached function is a formatter which will corectly transform the RGB color into the
+    /// The attached function is a formatter which will correctly transform the RGB color into the
     /// expected escape sequence format.
     ColorRequest(usize, Arc<dyn Fn(Rgb) -> String + Sync + Send + 'static>),
 
@@ -52,6 +52,9 @@ pub enum Event {
 
     /// Shutdown request.
     Exit,
+
+    /// Child process exited with an error code.
+    ChildExit(i32),
 }
 
 impl Debug for Event {
@@ -69,6 +72,7 @@ impl Debug for Event {
             Event::Wakeup => write!(f, "Wakeup"),
             Event::Bell => write!(f, "Bell"),
             Event::Exit => write!(f, "Exit"),
+            Event::ChildExit(code) => write!(f, "ChildExit({code})"),
         }
     }
 }

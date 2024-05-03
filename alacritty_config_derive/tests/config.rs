@@ -23,7 +23,7 @@ impl Default for TestEnum {
 
 #[derive(ConfigDeserialize)]
 struct Test {
-    #[config(alias = "noalias")]
+    #[config(alias = "field1_alias")]
     #[config(deprecated = "use field2 instead")]
     field1: usize,
     #[config(deprecated = "shouldn't be hit")]
@@ -39,6 +39,9 @@ struct Test {
     enom_error: TestEnum,
     #[config(removed = "it's gone")]
     gone: bool,
+    #[config(alias = "multiple_alias1")]
+    #[config(alias = "multiple_alias2")]
+    multiple_alias_field: usize,
 }
 
 impl Default for Test {
@@ -53,6 +56,7 @@ impl Default for Test {
             enom_big: TestEnum::default(),
             enom_error: TestEnum::default(),
             gone: false,
+            multiple_alias_field: 0,
         }
     }
 }
@@ -70,6 +74,7 @@ struct Test2<T: Default> {
 
 #[derive(ConfigDeserialize, Default)]
 struct Test3 {
+    #[config(alias = "flatty_alias")]
     flatty: usize,
 }
 
@@ -86,20 +91,22 @@ fn config_deserialize() {
     log::set_logger(logger).unwrap();
     log::set_max_level(log::LevelFilter::Warn);
 
-    let test: Test = serde_yaml::from_str(
+    let test: Test = toml::from_str(
         r#"
-        field1: 3
-        field3: 32
-        nesting:
-          field1: "testing"
-          field2: None
-          field3: 99
-          aliased: 8
-        flatty: 123
-        enom_small: "one"
-        enom_big: "THREE"
-        enom_error: "HugaBuga"
-        gone: false
+        field1 = 3
+        field3 = 32
+
+        flatty = 123
+        enom_small = "one"
+        enom_big = "THREE"
+        enom_error = "HugaBuga"
+        gone = false
+
+        [nesting]
+        field1 = "testing"
+        field2 = "None"
+        field3 = 99
+        aliased = 8
     "#,
     )
     .unwrap();
@@ -121,15 +128,16 @@ fn config_deserialize() {
     // Verify all log messages are correct.
     let error_logs = logger.error_logs.lock().unwrap();
     assert_eq!(error_logs.as_slice(), [
-        "Config error: field1: invalid type: string \"testing\", expected usize",
         "Config error: enom_error: unknown variant `HugaBuga`, expected one of `One`, `Two`, \
          `Three`",
+        "Config error: field1: invalid type: string \"testing\", expected usize",
     ]);
     let warn_logs = logger.warn_logs.lock().unwrap();
     assert_eq!(warn_logs.as_slice(), [
         "Config warning: field1 has been deprecated; use field2 instead",
         "Config warning: enom_error has been deprecated",
         "Config warning: gone has been removed; it's gone",
+        "Unused config key: field3",
     ]);
 }
 
@@ -170,8 +178,8 @@ impl Log for Logger {
 fn field_replacement() {
     let mut test = Test::default();
 
-    let value = serde_yaml::to_value(13).unwrap();
-    test.replace("nesting.field2", value).unwrap();
+    let value = toml::from_str("nesting.field2=13").unwrap();
+    test.replace(value).unwrap();
 
     assert_eq!(test.nesting.field2, Some(13));
 }
@@ -180,18 +188,57 @@ fn field_replacement() {
 fn replace_derive() {
     let mut test = Test::default();
 
-    let value = serde_yaml::to_value(9).unwrap();
-    test.replace("nesting.newtype", value).unwrap();
+    let value = toml::from_str("nesting.newtype=9").unwrap();
+    test.replace(value).unwrap();
 
     assert_eq!(test.nesting.newtype, NewType(9));
+}
+
+#[test]
+fn replace_derive_using_alias() {
+    let mut test = Test::default();
+
+    assert_ne!(test.field1, 9);
+
+    let value = toml::from_str("field1_alias=9").unwrap();
+    test.replace(value).unwrap();
+
+    assert_eq!(test.field1, 9);
+}
+
+#[test]
+fn replace_derive_using_multiple_aliases() {
+    let mut test = Test::default();
+
+    let toml_value = toml::from_str("multiple_alias1=6").unwrap();
+    test.replace(toml_value).unwrap();
+
+    assert_eq!(test.multiple_alias_field, 6);
+
+    let toml_value = toml::from_str("multiple_alias1=7").unwrap();
+    test.replace(toml_value).unwrap();
+
+    assert_eq!(test.multiple_alias_field, 7);
 }
 
 #[test]
 fn replace_flatten() {
     let mut test = Test::default();
 
-    let value = serde_yaml::to_value(7).unwrap();
-    test.replace("flatty", value).unwrap();
+    let value = toml::from_str("flatty=7").unwrap();
+    test.replace(value).unwrap();
+
+    assert_eq!(test.flatten.flatty, 7);
+}
+
+#[test]
+fn replace_flatten_using_alias() {
+    let mut test = Test::default();
+
+    assert_ne!(test.flatten.flatty, 7);
+
+    let value = toml::from_str("flatty_alias=7").unwrap();
+    test.replace(value).unwrap();
 
     assert_eq!(test.flatten.flatty, 7);
 }

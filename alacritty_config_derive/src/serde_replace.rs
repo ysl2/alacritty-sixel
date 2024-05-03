@@ -28,11 +28,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 pub fn derive_direct(ident: Ident, generics: Generics) -> TokenStream2 {
     quote! {
         impl <#generics> alacritty_config::SerdeReplace for #ident <#generics> {
-            fn replace(&mut self, key: &str, value: serde_yaml::Value) -> Result<(), Box<dyn std::error::Error>> {
-                if !key.is_empty() {
-                    let error = format!("Fields \"{}\" do not exist", key);
-                    return Err(error.into());
-                }
+            fn replace(&mut self, value: toml::Value) -> Result<(), Box<dyn std::error::Error>> {
                 *self = serde::Deserialize::deserialize(value)?;
 
                 Ok(())
@@ -48,24 +44,31 @@ pub fn derive_recursive<T>(
 ) -> TokenStream2 {
     let GenericsStreams { unconstrained, constrained, .. } =
         crate::generics_streams(&generics.params);
-    let replace_arms = match_arms(&fields);
+    let replace_arms = match match_arms(&fields) {
+        Err(e) => return e.to_compile_error(),
+        Ok(replace_arms) => replace_arms,
+    };
 
     quote! {
         #[allow(clippy::extra_unused_lifetimes)]
         impl <'de, #constrained> alacritty_config::SerdeReplace for #ident <#unconstrained> {
-            fn replace(&mut self, key: &str, value: serde_yaml::Value) -> Result<(), Box<dyn std::error::Error>> {
-                if key.is_empty() {
-                    *self = serde::Deserialize::deserialize(value)?;
-                    return Ok(());
-                }
+            fn replace(&mut self, value: toml::Value) -> Result<(), Box<dyn std::error::Error>> {
+                match value.as_table() {
+                    Some(table) => {
+                        for (field, next_value) in table {
+                            let next_value = next_value.clone();
+                            let value = value.clone();
 
-                let (field, next_key) = key.split_once('.').unwrap_or((key, ""));
-                match field {
-                    #replace_arms
-                    _ => {
-                        let error = format!("Field \"{}\" does not exist", field);
-                        return Err(error.into());
+                            match field.as_str() {
+                                #replace_arms
+                                _ => {
+                                    let error = format!("Field \"{}\" does not exist", field);
+                                    return Err(error.into());
+                                },
+                            }
+                        }
                     },
+                    None => *self = serde::Deserialize::deserialize(value)?,
                 }
 
                 Ok(())
@@ -75,7 +78,7 @@ pub fn derive_recursive<T>(
 }
 
 /// Create SerdeReplace recursive match arms.
-fn match_arms<T>(fields: &Punctuated<Field, T>) -> TokenStream2 {
+fn match_arms<T>(fields: &Punctuated<Field, T>) -> Result<TokenStream2, syn::Error> {
     let mut stream = TokenStream2::default();
     let mut flattened_arm = None;
 
@@ -88,19 +91,42 @@ fn match_arms<T>(fields: &Punctuated<Field, T>) -> TokenStream2 {
         let flatten = field
             .attrs
             .iter()
+            .filter(|attr| (*attr).path().is_ident("config"))
             .filter_map(|attr| attr.parse_args::<Attr>().ok())
             .any(|parsed| parsed.ident.as_str() == "flatten");
 
         if flatten && flattened_arm.is_some() {
-            return Error::new(ident.span(), MULTIPLE_FLATTEN_ERROR).to_compile_error();
+            return Err(Error::new(ident.span(), MULTIPLE_FLATTEN_ERROR));
         } else if flatten {
             flattened_arm = Some(quote! {
-                _ => alacritty_config::SerdeReplace::replace(&mut self.#ident, key, value)?,
+                _ => alacritty_config::SerdeReplace::replace(&mut self.#ident, value)?,
             });
         } else {
+            // Extract all `#[config(alias = "...")]` attribute values.
+            let aliases = field
+                .attrs
+                .iter()
+                .filter(|attr| (*attr).path().is_ident("config"))
+                .filter_map(|attr| attr.parse_args::<Attr>().ok())
+                .filter(|parsed| parsed.ident.as_str() == "alias")
+                .map(|parsed| {
+                    let value = parsed
+                        .param
+                        .ok_or_else(|| format!("Field \"{}\" has no alias value", ident))?
+                        .value();
+
+                    if value.trim().is_empty() {
+                        return Err(format!("Field \"{}\" has an empty alias value", ident));
+                    }
+
+                    Ok(value)
+                })
+                .collect::<Result<Vec<String>, String>>()
+                .map_err(|msg| Error::new(ident.span(), msg))?;
+
             stream.extend(quote! {
-                #literal => alacritty_config::SerdeReplace::replace(&mut self.#ident, next_key, value)?,
-            });
+                    #(#aliases)|* | #literal => alacritty_config::SerdeReplace::replace(&mut
+            self.#ident, next_value)?,         });
         }
     }
 
@@ -109,5 +135,5 @@ fn match_arms<T>(fields: &Punctuated<Field, T>) -> TokenStream2 {
         stream.extend(flattened_arm);
     }
 
-    stream
+    Ok(stream)
 }

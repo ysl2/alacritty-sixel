@@ -3,11 +3,12 @@
 use std::cmp::{max, min};
 use std::ops::{Bound, Deref, Index, IndexMut, Range, RangeBounds};
 
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::ansi::{CharsetIndex, StandardCharset};
 use crate::index::{Column, Line, Point};
 use crate::term::cell::{Flags, ResetDiscriminant};
+use crate::vte::ansi::{CharsetIndex, StandardCharset};
 
 pub mod resize;
 mod row;
@@ -104,14 +105,15 @@ pub enum Scroll {
 ///                           ^
 ///                        columns
 /// ```
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Grid<T> {
     /// Current cursor for writing data.
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub cursor: Cursor<T>,
 
     /// Last saved cursor.
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub saved_cursor: Cursor<T>,
 
     /// Lines in the grid. Each row holds a list of cells corresponding to the
@@ -266,33 +268,41 @@ impl<T: GridCell + Default + PartialEq + Clone> Grid<T> {
             self.display_offset = min(self.display_offset + positions, self.max_scroll_limit);
         }
 
-        // Create scrollback for the new lines.
-        self.increase_scroll_limit(positions);
+        // Only rotate the entire history if the active region starts at the top.
+        if region.start == 0 {
+            // Create scrollback for the new lines.
+            self.increase_scroll_limit(positions);
 
-        // Swap the lines fixed at the top to their target positions after rotation.
-        //
-        // Since we've made sure that the rotation will never rotate away the entire region, we
-        // know that the position of the fixed lines before the rotation must already be
-        // visible.
-        //
-        // We need to start from the bottom, to make sure the fixed lines aren't swapped with each
-        // other.
-        for i in (0..region.start.0).rev().map(Line::from) {
-            self.raw.swap(i, i + positions);
+            // Swap the lines fixed at the top to their target positions after rotation.
+            //
+            // Since we've made sure that the rotation will never rotate away the entire region, we
+            // know that the position of the fixed lines before the rotation must already be
+            // visible.
+            //
+            // We need to start from the bottom, to make sure the fixed lines aren't swapped with
+            // each other.
+            for i in (0..region.start.0).rev().map(Line::from) {
+                self.raw.swap(i, i + positions);
+            }
+
+            // Rotate the entire line buffer upward.
+            self.raw.rotate(-(positions as isize));
+
+            // Swap the fixed lines at the bottom back into position.
+            let screen_lines = self.screen_lines() as i32;
+            for i in (region.end.0..screen_lines).rev().map(Line::from) {
+                self.raw.swap(i, i - positions);
+            }
+        } else {
+            // Rotate lines without moving anything into history.
+            for i in (region.start.0..region.end.0 - positions as i32).map(Line::from) {
+                self.raw.swap(i, i + positions);
+            }
         }
-
-        // Rotate the entire line buffer upward.
-        self.raw.rotate(-(positions as isize));
 
         // Ensure all new lines are fully cleared.
-        let screen_lines = self.screen_lines();
-        for i in ((screen_lines - positions)..screen_lines).map(Line::from) {
+        for i in (region.end.0 - positions as i32..region.end.0).map(Line::from) {
             self.raw[i].reset(&self.cursor.template);
-        }
-
-        // Swap the fixed lines at the bottom back into position.
-        for i in (region.end.0..(screen_lines as i32)).rev().map(Line::from) {
-            self.raw.swap(i, i - positions);
         }
     }
 
@@ -580,12 +590,12 @@ pub struct GridIterator<'a, T> {
 }
 
 impl<'a, T> GridIterator<'a, T> {
-    /// Current iteratior position.
+    /// Current iterator position.
     pub fn point(&self) -> Point {
         self.point
     }
 
-    /// Cell at the current iteratior position.
+    /// Cell at the current iterator position.
     pub fn cell(&self) -> &'a T {
         &self.grid[self.point]
     }
